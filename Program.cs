@@ -36,10 +36,13 @@ namespace WinApiMapper
                 string target = args[1];
                 string dumpFile = BuildTempProject(target, int.Parse(args[0]));
                 ParseDump(dumpFile);
-                string realType = FindType(target,out int ptrLevel);
+                string realType = FindType(target, out int ptrLevel);
                 if (realType != null)
                 {
-                    PrintType(realType, ptrLevel);
+                    if (args.Length > 2 && args[2] == "--frida")
+                        PrintTypeFrida(realType, ptrLevel);
+                    else
+                        PrintType(realType, ptrLevel);
                 }
                 else
                 {
@@ -60,7 +63,7 @@ namespace WinApiMapper
             }
         }
 
-        static string FindType(string target,out int ptrLevel)
+        static string FindType(string target, out int ptrLevel)
         {
             ptrLevel = 0;
             if (Types.ContainsKey(target))
@@ -94,7 +97,7 @@ namespace WinApiMapper
 
         static void PrintType(string target, int ptrLevel)
         {
-            Console.WriteLine(target +" "+ new String('*', ptrLevel) + " :");
+            Console.WriteLine(target + " " + new String('*', ptrLevel) + " :");
             var t = Types[target];
             foreach (var m in t)
             {
@@ -212,6 +215,47 @@ namespace WinApiMapper
             process.StartInfo.WindowStyle = ProcessWindowStyle.Normal;
             process.Start();
             process.WaitForExit();
+        }
+
+        static void PrintTypeFrida(string target, int ptrLevel)
+        {
+            var t = Types[target];
+
+            StringBuilder sb = new StringBuilder();
+            sb.AppendLine("function Dump" + target + "(ptr){");
+            sb.AppendLine("  console.log('" + target + " at '+ptr);");
+            foreach (var m in t)
+            {
+                sb.AppendLine("  console.log('"+m.Name+": '+ "+ TypeToString(m.Offset, m.Type)+");        //"+ m.Type);
+            }
+            sb.AppendLine("}");
+            Console.WriteLine(sb.ToString());
+        }
+
+        static string TypeToString(int offset,string type)
+        {
+            if(type== "wchar_t *")
+                return "ptr.add(" + offset + ").readUtf16String()";
+
+            if (type.Contains("*"))
+                return "ptr.add(" + offset + ").readPointer()";
+
+            if (type == "int")
+                return "'0x'+ptr.add(" + offset + ").readS32().toString(16)";
+
+            if (type == "unsigned long")
+                return "'0x'+ptr.add(" + offset + ").readU32().toString(16)";
+
+            if (type == "unsigned short")
+                return "'0x'+ptr.add(" + offset + ").readU16().toString(16)";
+
+            if(type.StartsWith("char[") || type.StartsWith("unsigned char["))
+            {
+                var m = Regex.Match(type, @"[^\[]*\[0x([a-fA-F0-9]+)\]");
+                return "ptr.add(" + offset + ").readByteArray(0x" + m.Groups[1].Value+")";
+            }
+
+            return "ptr.add(" + offset + ").readPointer()";
         }
     }
 }

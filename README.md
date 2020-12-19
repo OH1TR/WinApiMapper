@@ -1,4 +1,4 @@
-# Dumps Windows API struct with offsets, field names and types.
+# Dumps structure of Windows API struct.
 
 Injects type from command-line to template C program. Compiles the program with debug information. Reads debug information and dumps content of that type.
 
@@ -29,4 +29,31 @@ offset: 0x34 unsigned char * lpReserved2
 offset: 0x38 void * hStdInput
 offset: 0x3c void * hStdOutput
 offset: 0x40 void * hStdError
+```
+
+Or Frida dump mode:
+
+```javascript
+WinApiMapper.exe 32 LPSTARTUPINFO --frida
+function Dump_STARTUPINFOW(ptr){
+  console.log('_STARTUPINFOW at '+ptr);
+  console.log('cb: '+ '0x'+ptr.add(0).readU32().toString(16));        //unsigned long
+  console.log('lpReserved: '+ ptr.add(4).readUtf16String());        //wchar_t *
+  console.log('lpDesktop: '+ ptr.add(8).readUtf16String());        //wchar_t *
+  console.log('lpTitle: '+ ptr.add(12).readUtf16String());        //wchar_t *
+  console.log('dwX: '+ '0x'+ptr.add(16).readU32().toString(16));        //unsigned long
+  console.log('dwY: '+ '0x'+ptr.add(20).readU32().toString(16));        //unsigned long
+  console.log('dwXSize: '+ '0x'+ptr.add(24).readU32().toString(16));        //unsigned long
+  console.log('dwYSize: '+ '0x'+ptr.add(28).readU32().toString(16));        //unsigned long
+  console.log('dwXCountChars: '+ '0x'+ptr.add(32).readU32().toString(16));        //unsigned long
+  console.log('dwYCountChars: '+ '0x'+ptr.add(36).readU32().toString(16));        //unsigned long
+  console.log('dwFillAttribute: '+ '0x'+ptr.add(40).readU32().toString(16));        //unsigned long
+  console.log('dwFlags: '+ '0x'+ptr.add(44).readU32().toString(16));        //unsigned long
+  console.log('wShowWindow: '+ '0x'+ptr.add(48).readU16().toString(16));        //unsigned short
+  console.log('cbReserved2: '+ '0x'+ptr.add(50).readU16().toString(16));        //unsigned short
+  console.log('lpReserved2: '+ ptr.add(52).readPointer());        //unsigned char *
+  console.log('hStdInput: '+ ptr.add(56).readPointer());        //void *
+  console.log('hStdOutput: '+ ptr.add(60).readPointer());        //void *
+  console.log('hStdError: '+ ptr.add(64).readPointer());        //void *
+}
 ```
