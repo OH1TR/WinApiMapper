@@ -1,4 +1,6 @@
-﻿using System;
+﻿using CommandLine;
+using CppAst;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -31,15 +33,30 @@ namespace WinApiMapper
         static Dictionary<string, List<TypeMember>> Types = new Dictionary<string, List<TypeMember>>();
         static void Main(string[] args)
         {
+            Parser.Default.ParseArguments<CommandLineOptions>(args)
+                   .WithParsed<CommandLineOptions>(o =>
+                   {
+                       if (o.Struct != null)
+                           DumpStruct(o);
+
+                       if (o.Function != null)
+                           DumpFunction(o);
+
+                   });
+        }
+
+        static void DumpStruct(CommandLineOptions o)
+        {
             try
             {
-                string target = args[1];
-                string dumpFile = BuildTempProject(target, int.Parse(args[0]));
+                string target = o.Struct;
+                string slnPath = BuildTempProject(target, o.Bits, false);
+                string dumpFile = Path.Combine(slnPath, "dump.txt");
                 ParseDump(dumpFile);
                 string realType = FindType(target, out int ptrLevel);
                 if (realType != null)
                 {
-                    if (args.Length > 2 && args[2] == "--frida")
+                    if (o.Mode == "frida")
                         PrintTypeFrida(realType, ptrLevel);
                     else
                         PrintType(realType, ptrLevel);
@@ -59,8 +76,57 @@ namespace WinApiMapper
             catch (Exception ex)
             {
                 Console.WriteLine(ex.Message + ex.StackTrace);
-                Console.WriteLine("Usage: WinApiMapper.exe: 32 _CONTEXT");
             }
+        }
+
+        static void DumpFunction(CommandLineOptions o)
+        {
+            var compilation = GetCompilation(o.Bits);
+
+            var d = compilation.Functions.Where(i => string.Equals( i.Name,o.Function,StringComparison.OrdinalIgnoreCase)).FirstOrDefault();
+
+            if(d!=null)
+            {
+                Console.WriteLine(d.ToString());
+            }
+            else
+            {
+                foreach(var f in compilation.Functions.Where(i => i.Name.StartsWith( o.Function, StringComparison.OrdinalIgnoreCase)))
+                {
+                    Console.WriteLine(f.ToString());
+                }
+            }
+            return;
+        }
+
+        static CppCompilation GetCompilation(int bits)
+        {
+            string slnPath = BuildTempProject("int", bits, true);
+            string targetFile = Path.Combine(slnPath, "TempProject.i");
+
+            CppCompilation compilation;
+            do
+            {
+                compilation = CppParser.ParseFile(targetFile, new CppParserOptions() { AutoSquashTypedef = true });
+                if (compilation.HasErrors)
+                {
+                    var lines = File.ReadAllLines(targetFile);
+                    foreach (var e in compilation.Diagnostics.Messages)
+                    {
+                        if (e.Type == CppLogMessageType.Error)
+                        {
+                            Console.WriteLine("Fixing " + targetFile + " removing line " + e.Location.Line);
+                            RemoveAt(ref lines, e.Location.Line - 1);
+                            File.WriteAllLines(targetFile, lines);
+                            goto loopBreak;
+                        }
+                    }
+                }
+            loopBreak:;
+            }
+            while (compilation.HasErrors);
+
+            return compilation;
         }
 
         static string FindType(string target, out int ptrLevel)
@@ -168,13 +234,14 @@ namespace WinApiMapper
         }
 
 
-        static string BuildTempProject(string targetType, int bits)
+        static string BuildTempProject(string targetType, int bits, bool preprocessOnly = false)
         {
             string platform = bits == 32 ? "x86" : "x64";
             string debugFolder = bits == 32 ? "Debug" : "x64\\Debug";
             string temp = Path.GetTempPath();
             string slnDir = Path.Combine(temp, Guid.NewGuid().ToString());
             string cpp = Path.Combine(slnDir, "TempProject.cpp");
+            string projFile = Path.Combine(slnDir, "TempProject.vcxproj");
 
             Directory.CreateDirectory(slnDir);
             CopyFile("Resources\\TempProject.cpp", slnDir);
@@ -186,19 +253,33 @@ namespace WinApiMapper
             txt = txt.Replace("//REPLACEME", targetType + " var;");
             File.WriteAllText(cpp, txt);
 
+            if (preprocessOnly)
+            {
+                var txt2 = File.ReadAllText(projFile);
+                txt2 = txt2.Replace("<!--REPLACEME-->", "<PreprocessToFile>true</PreprocessToFile>");
+                File.WriteAllText(projFile, txt2);
+            }
+
             StringBuilder sb = new StringBuilder();
             sb.Append(Environment.NewLine);
             sb.Append("msbuild " + slnDir + "\\TempProject.sln /p:Configuration=Debug /p:Platform=\"" + platform + "\"");
             sb.Append(Environment.NewLine);
-            sb.Append(@"if NOT [""%errorlevel%""]==[""0""] pause");
-            sb.Append(Environment.NewLine);
-            sb.Append("\"" + slnDir + "\\Dia2Dump.exe\" -all \"" + slnDir + "\\" + debugFolder + "\\TempProject.pdb\" > \"" + slnDir + "\\dump.txt\"");
-            sb.Append(Environment.NewLine);
-            sb.Append("cd \"" + slnDir + "\"");
-            sb.Append(Environment.NewLine);
+            if (!preprocessOnly)
+            {
+                sb.Append(@"if NOT [""%errorlevel%""]==[""0""] pause");
+                sb.Append(Environment.NewLine);
+                sb.Append("\"" + slnDir + "\\Dia2Dump.exe\" -all \"" + slnDir + "\\" + debugFolder + "\\TempProject.pdb\" > \"" + slnDir + "\\dump.txt\"");
+                sb.Append(Environment.NewLine);
+                sb.Append("cd \"" + slnDir + "\"");
+                sb.Append(Environment.NewLine);
+            }
             File.WriteAllText(Path.Combine(slnDir, "build.bat"), sb.ToString());
             RunCommand(Path.Combine(slnDir, "build.bat"));
-            return Path.Combine(slnDir, "dump.txt");
+
+            if (preprocessOnly)
+                CopyFile(Path.Combine(slnDir, debugFolder, "TempProject.i"), slnDir);
+
+            return slnDir;
         }
 
 
@@ -226,15 +307,15 @@ namespace WinApiMapper
             sb.AppendLine("  console.log('" + target + " at '+ptr);");
             foreach (var m in t)
             {
-                sb.AppendLine("  console.log('"+m.Name+": '+ "+ TypeToString(m.Offset, m.Type)+");        //"+ m.Type);
+                sb.AppendLine("  console.log('" + m.Name + ": '+ " + TypeToString(m.Offset, m.Type) + ");        //" + m.Type);
             }
             sb.AppendLine("}");
             Console.WriteLine(sb.ToString());
         }
 
-        static string TypeToString(int offset,string type)
+        static string TypeToString(int offset, string type)
         {
-            if(type== "wchar_t *")
+            if (type == "wchar_t *")
                 return "ptr.add(" + offset + ").readUtf16String()";
 
             if (type.Contains("*"))
@@ -249,13 +330,22 @@ namespace WinApiMapper
             if (type == "unsigned short")
                 return "'0x'+ptr.add(" + offset + ").readU16().toString(16)";
 
-            if(type.StartsWith("char[") || type.StartsWith("unsigned char["))
+            if (type.StartsWith("char[") || type.StartsWith("unsigned char["))
             {
                 var m = Regex.Match(type, @"[^\[]*\[0x([a-fA-F0-9]+)\]");
-                return "ptr.add(" + offset + ").readByteArray(0x" + m.Groups[1].Value+")";
+                return "ptr.add(" + offset + ").readByteArray(0x" + m.Groups[1].Value + ")";
             }
 
             return "ptr.add(" + offset + ").readPointer()";
+        }
+
+        public static void RemoveAt<T>(ref T[] arr, int index)
+        {
+            for (int a = index; a < arr.Length - 1; a++)
+            {
+                arr[a] = arr[a + 1];
+            }
+            Array.Resize(ref arr, arr.Length - 1);
         }
     }
 }

@@ -92,6 +92,7 @@
       <RuntimeTypeInfo>true</RuntimeTypeInfo>
       <GenerateXMLDocumentationFiles>true</GenerateXMLDocumentationFiles>
       <BrowseInformation>true</BrowseInformation>
+      <!--REPLACEME-->
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -127,6 +128,7 @@
       <RuntimeTypeInfo>true</RuntimeTypeInfo>
       <GenerateXMLDocumentationFiles>true</GenerateXMLDocumentationFiles>
       <BrowseInformation>true</BrowseInformation>
+      <!--REPLACEME-->
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
