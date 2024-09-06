@@ -52,10 +52,14 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Builder.cs" />
     <Compile Include="CommandLineOptions.cs" />
+    <Compile Include="DllExportEnumerator.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="StructParser.cs" />
     <Compile Include="TypeMember.cs" />
+    <Compile Include="TypeStore.cs" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="Resources\Dia2Dump.exe">

@@ -29,10 +29,31 @@ namespace WinApiMapper
 
     class Program
     {
-        static Dictionary<string, string> Typedef = new Dictionary<string, string>();
-        static Dictionary<string, List<TypeMember>> Types = new Dictionary<string, List<TypeMember>>();
         static void Main(string[] args)
         {
+            DllExportEnumerator pe = new DllExportEnumerator();
+            var exports = pe.GetExports(@"c:\Windows\System32\kernel32.dll");
+
+            CppCompilation compilation = GetCompilation(32);
+
+            TypeStore ts = new TypeStore();
+
+            ts.LoadTypeDefs(compilation);
+
+            int c = 0;
+            foreach (var e in exports)
+            {
+                c++;
+                CppFunction d = compilation.Functions.Where(i => string.Equals(i.Name, e, StringComparison.OrdinalIgnoreCase)).FirstOrDefault();
+                if (d == null)
+                    Console.WriteLine("NO!!! " + e);
+                else
+                    ProcessFunction(compilation, d);
+
+            }
+
+
+            /*
             Parser.Default.ParseArguments<CommandLineOptions>(args)
                    .WithParsed<CommandLineOptions>(o =>
                    {
@@ -43,6 +64,80 @@ namespace WinApiMapper
                            DumpFunction(o);
 
                    });
+            */
+        }
+
+        static void ProcessFunction(CppCompilation compilation, CppFunction f)
+        {
+            Console.WriteLine(f.ToString());
+
+            Console.Write(SimplifyType(f.ReturnType) + " " + f.Name + "(");
+
+            int c = f.Parameters.Count;
+            foreach (var p in f.Parameters)
+            {
+                Console.Write(SimplifyType(p.Type) + " " + p.Name);
+                if (--c != 0)
+                    Console.Write(",");
+            }
+
+            Console.WriteLine(")");
+        }
+
+        static string SimplifyType(CppType type)
+        {
+            CppType t = type;
+            string str = "|";
+            do
+            {
+                CppTypedef typedef = t as CppTypedef;
+                CppPointerType pointer = t as CppPointerType;
+                CppQualifiedType qua = t as CppQualifiedType;
+                CppArrayType arr = t as CppArrayType;
+
+                if (typedef != null)
+                    t = typedef.ElementType;
+
+                if (pointer != null)
+                {
+                    t = pointer.ElementType;
+                    str += " *";
+                }
+                if (qua != null)
+                {
+                    t = qua.ElementType;
+                    str = qua.Qualifier.ToString().ToLower()+" " + str;
+                }
+                if (arr != null)
+                {
+                    t = arr.ElementType;
+                    str += "["+arr.Size+"]";
+                }
+            }
+            while (t.TypeKind != CppTypeKind.Primitive && t.TypeKind != CppTypeKind.StructOrClass && t.TypeKind!= CppTypeKind.Function && t.TypeKind != CppTypeKind.Enum);
+
+            if (t.TypeKind != CppTypeKind.Function)
+            {
+                CppFunctionType fun = t as CppFunctionType;
+                //str = str.Replace("|", fun.ToString());
+                str = type.ToString();
+            }
+            else if(t.TypeKind == CppTypeKind.StructOrClass)
+            {
+                CppClass c = t as CppClass;
+                str = str.Replace("|", c.Name.ToString());
+            }
+            else if (t.TypeKind == CppTypeKind.StructOrClass)
+            {
+                CppEnum e = t as CppEnum;
+                str = str.Replace("|", e.Name.ToString());
+            }
+            else
+            {
+                str = str.Replace("|", t.ToString());
+            }
+
+            return str;
         }
 
         static void DumpStruct(CommandLineOptions o)
@@ -50,26 +145,27 @@ namespace WinApiMapper
             try
             {
                 string target = o.Struct;
-                string slnPath = BuildTempProject(target, o.Bits, false);
-                string dumpFile = Path.Combine(slnPath, "dump.txt");
-                ParseDump(dumpFile);
-                string realType = FindType(target, out int ptrLevel);
+
+                StructParser parser = new StructParser();
+
+                parser.ProcessStruct(target, o.Bits);
+
+                string realType = parser.FindType(target, out int ptrLevel);
                 if (realType != null)
                 {
                     if (o.Mode == "frida")
-                        PrintTypeFrida(realType, ptrLevel);
+                        PrintTypeFrida(parser, realType, ptrLevel);
                     else
-                        PrintType(realType, ptrLevel);
+                        PrintType(parser, realType, ptrLevel);
                 }
                 else
                 {
-                    Console.WriteLine("Failed, can you find it here: " + dumpFile);
                     Console.WriteLine("Or try these:");
 
-                    foreach (var t in Types.Where(i => i.Key.Contains(target)))
+                    foreach (var t in parser.Types.Where(i => i.Key.Contains(target)))
                         Console.WriteLine(t.Value);
 
-                    foreach (var t in Typedef.Where(i => i.Key.Contains(target)))
+                    foreach (var t in parser.Typedef.Where(i => i.Key.Contains(target)))
                         Console.WriteLine(t.Key + " : " + t.Value);
                 }
             }
@@ -83,15 +179,18 @@ namespace WinApiMapper
         {
             var compilation = GetCompilation(o.Bits);
 
-            var d = compilation.Functions.Where(i => string.Equals( i.Name,o.Function,StringComparison.OrdinalIgnoreCase)).FirstOrDefault();
+            var d = compilation.Functions.Where(i => string.Equals(i.Name, o.Function, StringComparison.OrdinalIgnoreCase)).FirstOrDefault();
 
-            if(d!=null)
+            TypeStore st = new TypeStore();
+            st.LoadFrom(compilation);
+
+            if (d != null)
             {
                 Console.WriteLine(d.ToString());
             }
             else
             {
-                foreach(var f in compilation.Functions.Where(i => i.Name.StartsWith( o.Function, StringComparison.OrdinalIgnoreCase)))
+                foreach (var f in compilation.Functions.Where(i => i.Name.StartsWith(o.Function, StringComparison.OrdinalIgnoreCase)))
                 {
                     Console.WriteLine(f.ToString());
                 }
@@ -101,7 +200,9 @@ namespace WinApiMapper
 
         static CppCompilation GetCompilation(int bits)
         {
-            string slnPath = BuildTempProject("int", bits, true);
+            Builder builder = new Builder();
+
+            string slnPath = builder.BuildTempProject("int", bits, true);
             string targetFile = Path.Combine(slnPath, "TempProject.i");
 
             CppCompilation compilation;
@@ -129,178 +230,24 @@ namespace WinApiMapper
             return compilation;
         }
 
-        static string FindType(string target, out int ptrLevel)
-        {
-            ptrLevel = 0;
-            if (Types.ContainsKey(target))
-                return target;
 
-            bool hit;
-            do
-            {
-                hit = false;
 
-                foreach (var t in Typedef)
-                {
-                    if (t.Key.Contains(target))
-                    {
-                        var tok = t.Value.Split(' ');
-                        target = tok.Reverse().Where(i => i != "*").FirstOrDefault();
-                        ptrLevel += tok.Where(i => i == "*").Count();
-                        hit = true;
-                    }
-                }
-
-                if (Types.ContainsKey(target))
-                {
-                    return target;
-                }
-            }
-            while (hit);
-
-            return null;
-        }
-
-        static void PrintType(string target, int ptrLevel)
+        static void PrintType(StructParser parser, string target, int ptrLevel)
         {
             Console.WriteLine(target + " " + new String('*', ptrLevel) + " :");
-            var t = Types[target];
+            var t = parser.Types[target];
             foreach (var m in t)
             {
                 Console.WriteLine("offset: 0x" + m.Offset.ToString("x") + " " + m.Type + " " + m.Name);
             }
         }
 
-        static void ParseDump(string file)
+
+
+
+        static void PrintTypeFrida(StructParser parser, string target, int ptrLevel)
         {
-            var lines = File.ReadAllLines(file);
-
-            string mode = "";
-            string typeName = "";
-            List<TypeMember> members = new List<TypeMember>();
-            foreach (string line in lines)
-            {
-                if (line.Trim().Length == 0)
-                    continue;
-
-                Match m;
-                m = Regex.Match(line, @"Data\s*:\s*this\+0x([0-9a-fA-FxX]+), Member, Type:\s*([^,]+),\s([\w\d_]+)");
-                if (m.Success)
-                {
-                    members.Add(new TypeMember(m.Groups[1].Value, m.Groups[2].Value, m.Groups[3].Value));
-                    continue;
-                }
-
-                m = Regex.Match(line, @"UserDefinedType:(\s*)([\w\d_]+)");
-                if (m.Success)
-                {
-                    if (mode == "UDT" && m.Groups[1].Value.Length > 1)
-                        continue;
-
-                    if (mode == "UDT")
-                    {
-                        if (!Types.ContainsKey(typeName))
-                            Types.Add(typeName, members);
-
-                        typeName = "";
-                        members = new List<TypeMember>();
-                        mode = "";
-                    }
-
-                    typeName = m.Groups[2].Value;
-                    mode = "UDT";
-                    continue;
-                }
-
-                if (mode == "UDT")
-                {
-                    if (!Types.ContainsKey(typeName))
-                        Types.Add(typeName, members);
-
-                    typeName = "";
-                    members = new List<TypeMember>();
-                    mode = "";
-                }
-
-                m = Regex.Match(line, @"Typedef\s*:\s([\w\d_]*),\sType:\s*(.*)");
-                if (m.Success)
-                {
-                    if (!Typedef.ContainsKey(m.Groups[1].Value))
-                        Typedef.Add(m.Groups[1].Value, m.Groups[2].Value);
-                    mode = "";
-                }
-            }
-
-        }
-
-
-        static string BuildTempProject(string targetType, int bits, bool preprocessOnly = false)
-        {
-            string platform = bits == 32 ? "x86" : "x64";
-            string debugFolder = bits == 32 ? "Debug" : "x64\\Debug";
-            string temp = Path.GetTempPath();
-            string slnDir = Path.Combine(temp, Guid.NewGuid().ToString());
-            string cpp = Path.Combine(slnDir, "TempProject.cpp");
-            string projFile = Path.Combine(slnDir, "TempProject.vcxproj");
-
-            Directory.CreateDirectory(slnDir);
-            CopyFile("Resources\\TempProject.cpp", slnDir);
-            CopyFile("Resources\\TempProject.sln", slnDir);
-            CopyFile("Resources\\TempProject.vcxproj", slnDir);
-            CopyFile("Resources\\Dia2Dump.exe", slnDir);
-
-            var txt = File.ReadAllText(cpp);
-            txt = txt.Replace("//REPLACEME", targetType + " var;");
-            File.WriteAllText(cpp, txt);
-
-            if (preprocessOnly)
-            {
-                var txt2 = File.ReadAllText(projFile);
-                txt2 = txt2.Replace("<!--REPLACEME-->", "<PreprocessToFile>true</PreprocessToFile>");
-                File.WriteAllText(projFile, txt2);
-            }
-
-            StringBuilder sb = new StringBuilder();
-            sb.Append(Environment.NewLine);
-            sb.Append("msbuild " + slnDir + "\\TempProject.sln /p:Configuration=Debug /p:Platform=\"" + platform + "\"");
-            sb.Append(Environment.NewLine);
-            if (!preprocessOnly)
-            {
-                sb.Append(@"if NOT [""%errorlevel%""]==[""0""] pause");
-                sb.Append(Environment.NewLine);
-                sb.Append("\"" + slnDir + "\\Dia2Dump.exe\" -all \"" + slnDir + "\\" + debugFolder + "\\TempProject.pdb\" > \"" + slnDir + "\\dump.txt\"");
-                sb.Append(Environment.NewLine);
-                sb.Append("cd \"" + slnDir + "\"");
-                sb.Append(Environment.NewLine);
-            }
-            File.WriteAllText(Path.Combine(slnDir, "build.bat"), sb.ToString());
-            RunCommand(Path.Combine(slnDir, "build.bat"));
-
-            if (preprocessOnly)
-                CopyFile(Path.Combine(slnDir, debugFolder, "TempProject.i"), slnDir);
-
-            return slnDir;
-        }
-
-
-
-        static void CopyFile(string name, string dstFolder)
-        {
-            File.Copy(name, Path.Combine(dstFolder, Path.GetFileName(name)));
-        }
-        static void RunCommand(string command)
-        {
-            Process process = new Process();
-            process.StartInfo.FileName = "cmd.exe";
-            process.StartInfo.Arguments = "/C \"" + command + "\"";
-            process.StartInfo.WindowStyle = ProcessWindowStyle.Normal;
-            process.Start();
-            process.WaitForExit();
-        }
-
-        static void PrintTypeFrida(string target, int ptrLevel)
-        {
-            var t = Types[target];
+            var t = parser.Types[target];
 
             StringBuilder sb = new StringBuilder();
             sb.AppendLine("function Dump" + target + "(ptr){");
